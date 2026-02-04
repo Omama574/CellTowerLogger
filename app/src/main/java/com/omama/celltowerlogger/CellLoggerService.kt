@@ -25,7 +25,6 @@ class CellLoggerService : Service() {
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private lateinit var notificationManager: NotificationManager
 
-    // Changed to var to allow re-initialization on restart
     private var cellExecutor: ExecutorService? = null
     private var locationScheduler: ScheduledExecutorService? = null
 
@@ -48,68 +47,33 @@ class CellLoggerService : Service() {
         telephonyManager = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
 
-<<<<<<< Updated upstream
-        createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification())
-
-        // 1. Mark the start in the CSV
-        writeToCsv("${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())},SERVICE_STARTED,N/A,N/A,N/A,N/A,N/A,N/A,N/A")
-
-        // 2. Start the listener
-=======
-        // Initialize workers
+        // Initialize fresh workers every time the service starts
         cellExecutor = Executors.newSingleThreadExecutor()
         locationScheduler = Executors.newSingleThreadScheduledExecutor()
 
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
 
-        // 1. Initial Snapshot: Log the tower immediately
-        logCurrentCellState()
+        // 1. Mark the start in the CSV
+        writeToCsv("${getTimestamp()},SERVICE_STARTED,N/A,N/A,N/A,N/A,N/A,N/A,N/A")
 
-        // 2. Start listeners and the 5-minute Audit "Bus"
->>>>>>> Stashed changes
+        // 2. Start listeners
         startCellInfoListener()
 
-        // 3. IMMEDIATELY log the current state (The "Snapshot")
+        // 3. Immediately log current state
         logCurrentCellState()
 
+        // 4. Start the 5-minute Audit
         startLocationAudit()
-
-        writeToCsv("${getTimestamp()},SERVICE_STARTED,N/A,N/A,N/A,N/A,N/A,N/A,N/A")
     }
-<<<<<<< Updated upstream
-    @SuppressLint("MissingPermission")
-    private fun logCurrentCellState() {
-        // We wrap this in the executor to keep the main thread smooth
-        cellExecutor.execute {
-            val cellInfoList = telephonyManager.allCellInfo
-            if (!cellInfoList.isNullOrEmpty()) {
-                handleCellInfoChange(cellInfoList)
-            }
-        }
-    }
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        return START_STICKY
-    }
-
-    private fun startLocationAudit() {
-        // Start the very first audit immediately. Subsequent audits will be chained.
-        locationScheduler.schedule({ requestLocationFix() }, 0, TimeUnit.SECONDS)
-    }
-
-    private fun scheduleNextAudit() {
-        // Schedule the next audit to run after the specified interval.
-        locationScheduler.schedule({ requestLocationFix() }, AUDIT_INTERVAL_MINUTES, TimeUnit.MINUTES)
-=======
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
 
     private fun startLocationAudit() {
-        val auditTask = Runnable { requestLocationFix() }
-        // Fixed: scheduleWithFixedDelay prevents "burst" execution after phone wakes up
-        locationScheduler?.scheduleWithFixedDelay(auditTask, 0, AUDIT_INTERVAL_MINUTES, TimeUnit.MINUTES)
->>>>>>> Stashed changes
+        // Use scheduleWithFixedDelay for a steady 5-minute heartbeat
+        locationScheduler?.scheduleWithFixedDelay({
+            requestLocationFix()
+        }, 0, AUDIT_INTERVAL_MINUTES, TimeUnit.MINUTES)
     }
 
     @SuppressLint("MissingPermission")
@@ -120,26 +84,18 @@ class CellLoggerService : Service() {
         lastGpsStatus = "Searching (Balanced)..."
         updateNotification()
 
-<<<<<<< Updated upstream
-=======
-        // V3 Feature: Balanced Power (Cell/Wi-Fi)
->>>>>>> Stashed changes
+        // V3: Balanced Power (Cell/Wi-Fi)
         val locationRequest = LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, 1000)
             .setMaxUpdates(1)
             .build()
 
-        // Timeout: Give up after 4 minutes to stay within the 5-minute cycle
+        // Give up after 4 mins to reset for the next 5-min cycle
         val timeoutHandler = locationScheduler?.schedule({
             if (locationCallback != null) {
                 logLocationFailure()
                 removeLocationUpdates()
-                scheduleNextAudit() // Chain the next audit after failure
             }
-<<<<<<< Updated upstream
-        }, AUDIT_INTERVAL_MINUTES, TimeUnit.MINUTES)
-=======
         }, 4, TimeUnit.MINUTES)
->>>>>>> Stashed changes
 
         locationCallback = object : LocationCallback() {
             override fun onLocationResult(locationResult: LocationResult) {
@@ -147,7 +103,6 @@ class CellLoggerService : Service() {
                 val location = locationResult.lastLocation ?: return
                 logLocationSuccess(location, requestStartTime)
                 removeLocationUpdates()
-                scheduleNextAudit() // Chain the next audit after success
             }
         }
 
@@ -179,17 +134,9 @@ class CellLoggerService : Service() {
             }
             telephonyManager.registerTelephonyCallback(cellExecutor!!, telephonyCallback as TelephonyCallback)
         } else {
-<<<<<<< Updated upstream
-            @Suppress("DEPRECATION")
-            telephonyCallback = object : PhoneStateListener() { // Fixed: No executor in constructor for API < 29
-                override fun onCellInfoChanged(cellInfo: MutableList<CellInfo>?) {
-                    cellExecutor.execute { cellInfo?.let { handleCellInfoChange(it) } }
-=======
-            // Fixed for API < 29 Compatibility
             telephonyCallback = object : PhoneStateListener() {
                 override fun onCellInfoChanged(cellInfo: MutableList<CellInfo>?) {
                     cellExecutor?.execute { cellInfo?.let { handleCellInfoChange(it) } }
->>>>>>> Stashed changes
                 }
             }
             @Suppress("DEPRECATION")
@@ -210,10 +157,7 @@ class CellLoggerService : Service() {
         cellInfoList.forEach { cellInfo ->
             val (cid, lacTac) = getCellIdentifiers(cellInfo)
             val signal = getSignalStrength(cellInfo)
-
-            // New logic to distinguish neighbors
             val eventLabel = if (cellInfo.isRegistered) "SERVING_CELL" else "NEIGHBOR"
-
             writeToCsv("$ts,$eventLabel,$cid,$lacTac,$signal,N/A,N/A,N/A,N/A")
         }
         updateNotification()
@@ -221,17 +165,12 @@ class CellLoggerService : Service() {
 
     private fun logLocationSuccess(location: Location, startTime: Long) {
         val now = System.currentTimeMillis()
-        val latency = now - startTime // Latency = Request to Fix
+        val latency = now - startTime
         val (cid, lacTac) = getCellIdentifiers(lastServingCellInfo)
         val signal = getSignalStrength(lastServingCellInfo)
 
         lastGpsStatus = "$latency ms"
-<<<<<<< Updated upstream
-        val logString = "$timestamp,BALANCED_FIX,$cid,$lacTac,$signal,${location.latitude},${location.longitude},${location.accuracy},$latency"
-        writeToCsv(logString)
-=======
         writeToCsv("${getTimestamp(now)},BALANCED_FIX,$cid,$lacTac,$signal,${location.latitude},${location.longitude},${location.accuracy},$latency")
->>>>>>> Stashed changes
         updateNotification()
     }
 
@@ -257,12 +196,7 @@ class CellLoggerService : Service() {
     }
 
     private fun buildNotification(): Notification {
-<<<<<<< Updated upstream
-        val contentText = "Mode: Balanced | Last Fix: $lastGpsStatus"
-
-=======
         val (cid, _) = getCellIdentifiers(lastServingCellInfo)
->>>>>>> Stashed changes
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setContentTitle("Cell Audit Active")
             .setContentText("Tower: $cid | Fix: $lastGpsStatus")
