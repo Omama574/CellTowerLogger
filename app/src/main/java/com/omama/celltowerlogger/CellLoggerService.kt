@@ -54,13 +54,31 @@ class CellLoggerService : Service() {
         notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         telephonyManager = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
 
+        // 1. Mark the start in the CSV
+        writeToCsv("${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())},SERVICE_STARTED,N/A,N/A,N/A,N/A,N/A,N/A,N/A")
+
+        // 2. Start the listener
         startCellInfoListener()
+
+        // 3. IMMEDIATELY log the current state (The "Snapshot")
+        logCurrentCellState()
+
         startLocationAudit()
     }
-
+    @SuppressLint("MissingPermission")
+    private fun logCurrentCellState() {
+        // We wrap this in the executor to keep the main thread smooth
+        cellExecutor.execute {
+            val cellInfoList = telephonyManager.allCellInfo
+            if (!cellInfoList.isNullOrEmpty()) {
+                handleCellInfoChange(cellInfoList)
+            }
+        }
+    }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return START_STICKY
     }
@@ -124,9 +142,10 @@ class CellLoggerService : Service() {
             telephonyManager.registerTelephonyCallback(cellExecutor, telephonyCallback as TelephonyCallback)
         } else {
             @Suppress("DEPRECATION")
-            telephonyCallback = object : PhoneStateListener(cellExecutor) {
-                @Deprecated("Deprecated in Java")
-                override fun onCellInfoChanged(cellInfo: MutableList<CellInfo>?) { cellInfo?.let { handleCellInfoChange(it) } }
+            telephonyCallback = object : PhoneStateListener() { // Fixed: No executor in constructor for API < 29
+                override fun onCellInfoChanged(cellInfo: MutableList<CellInfo>?) {
+                    cellExecutor.execute { cellInfo?.let { handleCellInfoChange(it) } }
+                }
             }
             @Suppress("DEPRECATION")
             telephonyManager.listen(telephonyCallback as PhoneStateListener, PhoneStateListener.LISTEN_CELL_INFO)
