@@ -166,11 +166,30 @@ class CellLoggerService : Service() {
     private fun logLocationSuccess(location: Location, startTime: Long) {
         val now = System.currentTimeMillis()
         val latency = now - startTime
+        val ts = getTimestamp(now)
+
+        // 1. Log the GPS fix itself
+        // We still include the Serving Cell ID here for a quick reference on the same row
         val (cid, lacTac) = getCellIdentifiers(lastServingCellInfo)
         val signal = getSignalStrength(lastServingCellInfo)
 
         lastGpsStatus = "$latency ms"
-        writeToCsv("${getTimestamp(now)},BALANCED_FIX,$cid,$lacTac,$signal,${location.latitude},${location.longitude},${location.accuracy},$latency")
+        writeToCsv("$ts,BALANCED_FIX,$cid,$lacTac,$signal,${location.latitude},${location.longitude},${location.accuracy},$latency")
+
+        // 2. NEW: Trigger a full environment dump of all towers at this location
+        cellExecutor?.execute {
+            val allTowers = telephonyManager.allCellInfo
+            if (!allTowers.isNullOrEmpty()) {
+                allTowers.forEach { cellInfo ->
+                    val (nCid, nLac) = getCellIdentifiers(cellInfo)
+                    val nSignal = getSignalStrength(cellInfo)
+                    val label = if (cellInfo.isRegistered) "AUDIT_SERVING" else "AUDIT_NEIGHBOR"
+
+                    // We log these as separate rows so your CSV stays organized
+                    writeToCsv("$ts,$label,$nCid,$nLac,$nSignal,${location.latitude},${location.longitude},${location.accuracy},N/A")
+                }
+            }
+        }
         updateNotification()
     }
 
