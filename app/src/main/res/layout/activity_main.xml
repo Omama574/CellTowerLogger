@@ -12,9 +12,17 @@
         android:id="@+id/statusText"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_marginBottom="24dp"
+        android:layout_marginBottom="8dp"
         android:text="Status: Idle"
         android:textSize="18sp" />
+
+    <TextView
+        android:id="@+id/lastFixInfo"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="24dp"
+        android:text="Last GPS Fix: N/A"
+        android:textSize="14sp" />
 
     <Button
         android:id="@+id/btnStart"
@@ -25,7 +33,7 @@
 
     <Button
         android:id="@+id/btnStop"
-        android:layout_width="wrap_content"
+        android.layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginBottom="16dp"
         android:text="Stop Recording" />

@@ -1,6 +1,7 @@
 package com.omama.celltowerlogger
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
@@ -20,13 +21,17 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnStop: Button
     private lateinit var btnDownload: Button
     private lateinit var statusText: TextView
+    private lateinit var lastFixInfo: TextView
 
     private val requestMultiplePermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
-        if (permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true && permissions[Manifest.permission.READ_PHONE_STATE] == true) {
+        val fineLocationGranted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] ?: false
+        val phoneStateGranted = permissions[Manifest.permission.READ_PHONE_STATE] ?: false
+
+        if (fineLocationGranted && phoneStateGranted) {
             // Permissions are granted, now check for background location permission
             checkBackgroundLocationPermission()
         } else {
-            Toast.makeText(this, "Fine Location and Phone State permissions are required to start recording.", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "High Accuracy Location and Phone State permissions are required.", Toast.LENGTH_LONG).show()
             btnStart.isEnabled = false
         }
     }
@@ -36,11 +41,12 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Background location permission granted.", Toast.LENGTH_SHORT).show()
             btnStart.isEnabled = true
         } else {
-            Toast.makeText(this, "Background Location is needed to log towers while the screen is off.", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Background Location is essential for logging while the app is not visible.", Toast.LENGTH_LONG).show()
             btnStart.isEnabled = false
         }
     }
 
+    @SuppressLint("SetTextI18n")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -49,11 +55,17 @@ class MainActivity : AppCompatActivity() {
         btnStop = findViewById(R.id.btnStop)
         btnDownload = findViewById(R.id.btnDownload)
         statusText = findViewById(R.id.statusText)
+        lastFixInfo = findViewById(R.id.lastFixInfo)
 
         btnStart.isEnabled = false // Disable button by default
 
         btnStart.setOnClickListener {
-            startService(Intent(this, CellLoggerService::class.java))
+            val serviceIntent = Intent(this, CellLoggerService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent)
+            } else {
+                startService(serviceIntent)
+            }
             statusText.text = "Status: Recording..."
         }
 
