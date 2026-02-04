@@ -66,8 +66,13 @@ class CellLoggerService : Service() {
     }
 
     private fun startLocationAudit() {
-        val auditTask = Runnable { requestLocationFix() }
-        locationScheduler.scheduleAtFixedRate(auditTask, 0, AUDIT_INTERVAL_MINUTES, TimeUnit.MINUTES)
+        // Start the very first audit immediately. Subsequent audits will be chained.
+        locationScheduler.schedule({ requestLocationFix() }, 0, TimeUnit.SECONDS)
+    }
+
+    private fun scheduleNextAudit() {
+        // Schedule the next audit to run after the specified interval.
+        locationScheduler.schedule({ requestLocationFix() }, AUDIT_INTERVAL_MINUTES, TimeUnit.MINUTES)
     }
 
     @SuppressLint("MissingPermission")
@@ -78,7 +83,7 @@ class CellLoggerService : Service() {
         lastGpsStatus = "Searching..."
         updateNotification()
 
-        val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000)
+        val locationRequest = LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, 1000)
             .setMaxUpdates(1)
             .build()
 
@@ -86,8 +91,9 @@ class CellLoggerService : Service() {
             if (locationCallback != null) {
                 logLocationFailure()
                 removeLocationUpdates()
+                scheduleNextAudit() // Chain the next audit after failure
             }
-        }, 1, TimeUnit.MINUTES) // 1-minute timeout for a fix
+        }, AUDIT_INTERVAL_MINUTES, TimeUnit.MINUTES)
 
         locationCallback = object : LocationCallback() {
             override fun onLocationResult(locationResult: LocationResult) {
@@ -95,6 +101,7 @@ class CellLoggerService : Service() {
                 val location = locationResult.lastLocation ?: return
                 logLocationSuccess(location, requestStartTime)
                 removeLocationUpdates()
+                scheduleNextAudit() // Chain the next audit after success
             }
         }
 
@@ -116,6 +123,7 @@ class CellLoggerService : Service() {
             }
             telephonyManager.registerTelephonyCallback(cellExecutor, telephonyCallback as TelephonyCallback)
         } else {
+            @Suppress("DEPRECATION")
             telephonyCallback = object : PhoneStateListener(cellExecutor) {
                 @Deprecated("Deprecated in Java")
                 override fun onCellInfoChanged(cellInfo: MutableList<CellInfo>?) { cellInfo?.let { handleCellInfoChange(it) } }
@@ -158,7 +166,7 @@ class CellLoggerService : Service() {
         val signal = getSignalStrength(lastServingCellInfo)
 
         lastGpsStatus = "$latency ms"
-        val logString = "$timestamp,LOCATION_SUCCESS,$cid,$lacTac,$signal,${location.latitude},${location.longitude},${location.accuracy},$latency"
+        val logString = "$timestamp,BALANCED_FIX,$cid,$lacTac,$signal,${location.latitude},${location.longitude},${location.accuracy},$latency"
         writeToCsv(logString)
         updateNotification()
     }
@@ -193,8 +201,7 @@ class CellLoggerService : Service() {
     // --- Notification --- //
 
     private fun buildNotification(): Notification {
-        val (cid, _) = getCellIdentifiers(lastServingCellInfo)
-        val contentText = "Tower: $cid | GPS: $lastGpsStatus"
+        val contentText = "Mode: Balanced | Last Fix: $lastGpsStatus"
 
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setContentTitle("Cell & Location Audit Active")

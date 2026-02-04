@@ -1,24 +1,20 @@
-﻿# CellTowerLogger v2.0
+﻿# CellTowerLogger v3.1 - "Stealth Audit"
 
-An event-driven Android utility designed for high-resolution cellular network analysis and GPS performance auditing. This version pivots away from inefficient polling to a reactive architecture.
+This version evaluates the performance of **Network-Based Location** (Wi-Fi/Cell Triangulation) vs. **Pure GPS**. It is optimized for long-duration transit logging with minimal battery impact.
 
-## Technical Architecture
-- **Event-Driven Telephony**: Utilizes TelephonyCallback to trigger data collection only upon a physical cell handover, significantly reducing radio modem wake-up cycles.
-- **GPS Performance Audit**: Executes a high-accuracy location request every 5 minutes to measure "Time-to-First-Fix" (Latency).
-- **Audit Logic**: Captures precise timestamps for request initiation and response reception to benchmark Fused Location Provider (FLP) efficiency in transit environments.
-- **State Persistence**: Implements BufferedWriter.flush() for real-time I/O safety and a Foreground Service for process priority.
+## Key Changes in v3.1
+- **Priority Shift**: Migrated from PRIORITY_HIGH_ACCURACY to PRIORITY_BALANCED_POWER_ACCURACY.
+- **Daisy-Chain Scheduling**: Replaced fixed timers with sequential scheduling (scheduleNextAudit()). A new 5-minute cycle only starts *after* the previous one concludes or times out.
+- **Extended Persistence**: The app now waits the full 5-minute interval for a balanced fix to resolve, testing the limits of non-GPS positioning on moving trains.
+- **Improved I/O**: Real-time BufferedWriter flushing for data integrity.
 
-## Data Schema (CSV)
-| Column | Description |
-| :--- | :--- |
-| **Timestamp** | RFC 3339 formatted event time |
-| **Event_Type** | CELL_CHANGE, LOCATION_SUCCESS, or LOCATION_FAILURE |
-| **CID / TAC** | Primary Serving Cell identifiers |
-| **Signal_dBm** | Signal strength at time of event |
-| **Lat / Lon** | WGS84 Coordinates |
-| **Accuracy** | Horizontal accuracy radius in meters |
-| **Latency_ms** | Milliseconds between GPS request and fix |
+## Technical Specifications
+- **Location Mode**: Balanced Power (Cell + Wi-Fi)
+- **Audit Interval**: 5 Minutes (Sequential)
+- **Cell Logging**: Event-driven (triggered by onCellInfoChanged)
+- **Min API**: 24 (Android 7.0)
+- **Target API**: 34 (Android 14.0)
 
-## Field Test Requirements
-- **Battery**: Set to "Unrestricted" to bypass Doze mode during the 5-minute GPS audit.
-- **Permissions**: Location must be set to "Allow all the time."
+## CSV Schema Updates
+- Event_Type: Now logs BALANCED_FIX for successful location audits.
+- Latency_ms: Time taken for the network location to resolve within the 5-minute window.
