@@ -1,47 +1,35 @@
-<?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:gravity="center"
     android:orientation="vertical"
     android:padding="16dp"
-    tools:context=".MainActivity">
+    android:gravity="center">
 
     <TextView
-        android:id="@+id/statusText"
+        android:id="@+id/txtStatus"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_marginBottom="8dp"
-        android:text="Status: Idle"
-        android:textSize="18sp" />
-
-    <TextView
-        android:id="@+id/lastFixInfo"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginBottom="24dp"
-        android:text="Last GPS Fix: N/A"
-        android:textSize="14sp" />
+        android:text="Status: Waiting"
+        android:textSize="18sp"
+        android:layout_marginBottom="24dp"/>
 
     <Button
         android:id="@+id/btnStart"
-        android:layout_width="wrap_content"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginBottom="16dp"
-        android:text="Start Recording" />
+        android:text="Start Logging" />
 
     <Button
         android:id="@+id/btnStop"
-        android:layout_width="wrap_content"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginBottom="16dp"
-        android:text="Stop Recording" />
+        android:text="Stop Logging" />
 
     <Button
-        android:id="@+id/btnDownload"
-        android:layout_width="wrap_content"
+        android:id="@+id/btnShare"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Download/Share CSV" />
+        android:layout_marginTop="20dp"
+        android:text="Export CSV File" />
 
 </LinearLayout>
