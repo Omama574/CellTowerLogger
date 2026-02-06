@@ -20,7 +20,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var txtStatus: TextView
 
-    // Initial permissions needed to start the app
+    // Base permissions (Foreground)
     private val basePermissions = mutableListOf(
         Manifest.permission.ACCESS_FINE_LOCATION,
         Manifest.permission.ACCESS_COARSE_LOCATION,
@@ -35,10 +35,9 @@ class MainActivity : AppCompatActivity() {
         ActivityResultContracts.RequestMultiplePermissions()
     ) { results ->
         if (results.all { it.value }) {
-            // If GPS and Phone are granted, check for the critical Background Location
             checkBackgroundLocation()
         } else {
-            Toast.makeText(this, "All permissions are required for logging", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Permissions Denied", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -58,6 +57,7 @@ class MainActivity : AppCompatActivity() {
         btnStop.setOnClickListener {
             stopService(Intent(this, CellLoggerService::class.java))
             txtStatus.text = "Status: Stopped"
+            Toast.makeText(this, "Logger Stopped", Toast.LENGTH_SHORT).show()
         }
 
         btnShare.setOnClickListener {
@@ -66,14 +66,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun checkBackgroundLocation() {
+        // Android 10+ requires separate background permission check
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val hasBackground = ContextCompat.checkSelfPermission(
                 this, Manifest.permission.ACCESS_BACKGROUND_LOCATION
             ) == PackageManager.PERMISSION_GRANTED
 
             if (!hasBackground) {
-                // Android requires background location for "Allow all the time"
-                Toast.makeText(this, "Set Location to 'Allow all the time' for long tests", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "IMPORTANT: Select 'Allow all the time'", Toast.LENGTH_LONG).show()
                 val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
                     data = Uri.fromParts("package", packageName, null)
                 }
@@ -99,11 +99,10 @@ class MainActivity : AppCompatActivity() {
     private fun shareCsvFile() {
         val file = File(filesDir, "tower_logs.csv")
         if (!file.exists()) {
-            Toast.makeText(this, "No log file found yet", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "No logs found yet.", Toast.LENGTH_SHORT).show()
             return
         }
 
-        // Authority must match the one in AndroidManifest.xml provider
         val uri = FileProvider.getUriForFile(this, "${packageName}.fileprovider", file)
 
         val intent = Intent(Intent.ACTION_SEND).apply {
@@ -111,6 +110,6 @@ class MainActivity : AppCompatActivity() {
             putExtra(Intent.EXTRA_STREAM, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        startActivity(Intent.createChooser(intent, "Share Tower Logs"))
+        startActivity(Intent.createChooser(intent, "Share Logs"))
     }
 }

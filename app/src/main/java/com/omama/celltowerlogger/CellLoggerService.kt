@@ -29,13 +29,23 @@ class CellLoggerService : Service() {
         telephonyManager = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
 
-        startForeground(101, buildNotification("Initializing..."))
+        // CRITICAL: Create channel immediately so startForeground doesn't crash
+        createNotificationChannel()
+        startForeground(101, buildNotification("Initializing Logger..."))
 
-        // 1. Passive Handover (Checks for tower changes between GPS fixes)
+        // 1. Passive Handover (For real-time changes)
         setupPassiveListener()
 
         // 2. High Priority GPS Heartbeat (Every 5 minutes)
-        scheduler.scheduleAtFixedRate({ if (!isAuditRunning.get()) runHighPriorityAudit() }, 0, 5, TimeUnit.MINUTES)
+        // This wakes the phone up even if in Doze mode
+        scheduler.scheduleAtFixedRate({
+            if (!isAuditRunning.get()) runHighPriorityAudit()
+        }, 0, 5, TimeUnit.MINUTES)
+    }
+
+    // Ensures service tries to restart if Android kills it
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        return START_STICKY
     }
 
     @SuppressLint("MissingPermission")
@@ -43,6 +53,7 @@ class CellLoggerService : Service() {
         isAuditRunning.set(true)
         val startTime = System.currentTimeMillis()
 
+        // High Accuracy request wakes up the GPS chip -> wakes up the OS
         val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000)
             .setMaxUpdates(1)
             .setDurationMillis(30000)
@@ -54,10 +65,17 @@ class CellLoggerService : Service() {
                 val latency = System.currentTimeMillis() - startTime
 
                 if (loc != null) {
-                    // --- NEW: 2-SECOND MODEM WARM-UP ---
-                    // We wait 2 seconds AFTER the GPS fix to let the modem refresh neighbors
+                    // --- THE FIX: 2-SECOND MODEM WARM-UP ---
+                    // Wait 2s for the modem to populate neighbors before reading
                     Handler(Looper.getMainLooper()).postDelayed({
                         val cells = telephonyManager.allCellInfo ?: emptyList()
+
+                        // If list is empty, modem failed to wake up in time.
+                        // We log a generic row so you know the GPS worked.
+                        if (cells.isEmpty()) {
+                            logRow("AUDIT_EMPTY", "N/A", "N/A", "N/A", loc.latitude.toString(), loc.longitude.toString(), loc.accuracy.toString(), latency.toString())
+                        }
+
                         cells.forEach { cell ->
                             val (cid, lac) = getCellIds(cell)
                             if (isValidId(cid)) {
@@ -65,9 +83,9 @@ class CellLoggerService : Service() {
                                 logRow(label, cid, lac, getDbm(cell), loc.latitude.toString(), loc.longitude.toString(), loc.accuracy.toString(), latency.toString())
                             }
                         }
-                        // Release lock only after logging is finished
                         isAuditRunning.set(false)
-                    }, 2000)
+                        updateNotification("Last Audit: ${getTimestamp()}")
+                    }, 2000) // 2000ms delay
                 } else {
                     isAuditRunning.set(false)
                 }
@@ -82,6 +100,8 @@ class CellLoggerService : Service() {
             override fun onCellInfoChanged(info: MutableList<CellInfo>) {
                 val serving = info.firstOrNull { it.isRegistered } ?: return
                 val (cid, lac) = getCellIds(serving)
+
+                // Only log if it's a valid new tower
                 if (isValidId(cid) && cid != lastCid) {
                     lastCid = cid
                     logRow("SERVING_HANDOVER", cid, lac, getDbm(serving), "N/A", "N/A", "N/A", "N/A")
@@ -105,8 +125,9 @@ class CellLoggerService : Service() {
     }
 
     private fun isValidId(id: String): Boolean {
-        // Filter out N/A, Int Max (2147483647), and Long Max (9223372036854775807)
-        return id != "N/A" && id != "2147483647" && id != "9223372036854775807" && id != "0" && id != "-1"
+        // Robust filtering for all types of junk
+        val num = id.toLongOrNull() ?: return false
+        return num > 0 && num != 2147483647L && num != 9223372036854775807L
     }
 
     private fun getDbm(cell: CellInfo): String {
@@ -127,24 +148,34 @@ class CellLoggerService : Service() {
                 val isNew = !file.exists()
                 BufferedWriter(FileWriter(file, true)).use { out ->
                     if (isNew) out.write("Timestamp,Event_Type,CID,LAC_TAC,Signal_dBm,Lat,Lon,Accuracy,Latency_ms\n")
-                    val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
-                    out.write("$ts,$event,$cid,$lac,$dbm,$lat,$lon,$acc,$latency\n")
+                    out.write("${getTimestamp()},$event,$cid,$lac,$dbm,$lat,$lon,$acc,$latency\n")
                 }
             } catch (e: Exception) {}
         }
     }
 
+    private fun getTimestamp(): String {
+        return SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel("CellLog", "Logger Service", NotificationManager.IMPORTANCE_LOW)
+            val manager = getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(channel)
+        }
+    }
+
     private fun buildNotification(txt: String) = NotificationCompat.Builder(this, "CellLog")
-        .setContentTitle("Cell Logger (High Priority)")
+        .setContentTitle("Cell Logger Running")
         .setContentText(txt)
         .setSmallIcon(android.R.drawable.ic_menu_mylocation)
-        .setOngoing(true).build()
+        .setOngoing(true)
+        .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+        .build()
 
     private fun updateNotification(txt: String) {
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            nm.createNotificationChannel(NotificationChannel("CellLog", "Logger", NotificationManager.IMPORTANCE_LOW))
-        }
         nm.notify(101, buildNotification(txt))
     }
 
