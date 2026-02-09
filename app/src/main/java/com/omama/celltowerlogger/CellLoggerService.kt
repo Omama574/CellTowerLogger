@@ -29,21 +29,18 @@ class CellLoggerService : Service() {
         telephonyManager = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
 
-        // CRITICAL: Create channel immediately so startForeground doesn't crash
         createNotificationChannel()
         startForeground(101, buildNotification("Initializing Logger..."))
 
-        // 1. Passive Handover (For real-time changes)
+        // 1. Passive Handover (Captured when OS is awake)
         setupPassiveListener()
 
-        // 2. High Priority GPS Heartbeat (Every 5 minutes)
-        // This wakes the phone up even if in Doze mode
+        // 2. High Priority Heartbeat (Every 5 minutes)
         scheduler.scheduleAtFixedRate({
             if (!isAuditRunning.get()) runHighPriorityAudit()
         }, 0, 5, TimeUnit.MINUTES)
     }
 
-    // Ensures service tries to restart if Android kills it
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return START_STICKY
     }
@@ -53,7 +50,6 @@ class CellLoggerService : Service() {
         isAuditRunning.set(true)
         val startTime = System.currentTimeMillis()
 
-        // High Accuracy request wakes up the GPS chip -> wakes up the OS
         val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000)
             .setMaxUpdates(1)
             .setDurationMillis(30000)
@@ -65,33 +61,41 @@ class CellLoggerService : Service() {
                 val latency = System.currentTimeMillis() - startTime
 
                 if (loc != null) {
-                    // --- THE FIX: 2-SECOND MODEM WARM-UP ---
-                    // Wait 2s for the modem to populate neighbors before reading
-                    Handler(Looper.getMainLooper()).postDelayed({
-                        val cells = telephonyManager.allCellInfo ?: emptyList()
-
-                        // If list is empty, modem failed to wake up in time.
-                        // We log a generic row so you know the GPS worked.
-                        if (cells.isEmpty()) {
-                            logRow("AUDIT_EMPTY", "N/A", "N/A", "N/A", loc.latitude.toString(), loc.longitude.toString(), loc.accuracy.toString(), latency.toString())
-                        }
-
-                        cells.forEach { cell ->
-                            val (cid, lac) = getCellIds(cell)
-                            if (isValidId(cid)) {
-                                val label = if (cell.isRegistered) "AUDIT_SERVING" else "AUDIT_NEIGHBOR"
-                                logRow(label, cid, lac, getDbm(cell), loc.latitude.toString(), loc.longitude.toString(), loc.accuracy.toString(), latency.toString())
+                    // FORCE MODEM REFRESH: Instead of waiting 2s, we demand a fresh scan.
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        telephonyManager.requestCellInfoUpdate(mainExecutor, object : TelephonyManager.CellInfoCallback() {
+                            override fun onCellInfo(cells: List<CellInfo>) {
+                                processAndLogCells(cells, loc, latency)
                             }
-                        }
-                        isAuditRunning.set(false)
-                        updateNotification("Last Audit: ${getTimestamp()}")
-                    }, 2000) // 2000ms delay
+                        })
+                    } else {
+                        // Fallback for older Android versions
+                        Handler(Looper.getMainLooper()).postDelayed({
+                            processAndLogCells(telephonyManager.allCellInfo ?: emptyList(), loc, latency)
+                        }, 2000)
+                    }
                 } else {
                     isAuditRunning.set(false)
                 }
                 fusedLocationClient.removeLocationUpdates(this)
             }
         }, Looper.getMainLooper())
+    }
+
+    private fun processAndLogCells(cells: List<CellInfo>, loc: Location, latency: Long) {
+        if (cells.isEmpty()) {
+            logRow("AUDIT_EMPTY", "N/A", "N/A", "N/A", loc.latitude.toString(), loc.longitude.toString(), loc.accuracy.toString(), latency.toString())
+        }
+
+        cells.forEach { cell ->
+            val (cid, lac) = getCellIds(cell)
+            if (isValidId(cid)) {
+                val label = if (cell.isRegistered) "AUDIT_SERVING" else "AUDIT_NEIGHBOR"
+                logRow(label, cid, lac, getDbm(cell), loc.latitude.toString(), loc.longitude.toString(), loc.accuracy.toString(), latency.toString())
+            }
+        }
+        isAuditRunning.set(false)
+        updateNotification("Last Audit: ${getTimestamp()}")
     }
 
     @SuppressLint("MissingPermission")
@@ -101,7 +105,6 @@ class CellLoggerService : Service() {
                 val serving = info.firstOrNull { it.isRegistered } ?: return
                 val (cid, lac) = getCellIds(serving)
 
-                // Only log if it's a valid new tower
                 if (isValidId(cid) && cid != lastCid) {
                     lastCid = cid
                     logRow("SERVING_HANDOVER", cid, lac, getDbm(serving), "N/A", "N/A", "N/A", "N/A")
@@ -115,7 +118,8 @@ class CellLoggerService : Service() {
     }
 
     private fun getCellIds(cell: CellInfo): Pair<String, String> {
-        return when (val id = cell.cellIdentity) {
+        val id = cell.cellIdentity
+        return when (id) {
             is CellIdentityLte -> id.ci.toString() to id.tac.toString()
             is CellIdentityGsm -> id.cid.toString() to id.lac.toString()
             is CellIdentityWcdma -> id.cid.toString() to id.lac.toString()
@@ -125,13 +129,14 @@ class CellLoggerService : Service() {
     }
 
     private fun isValidId(id: String): Boolean {
-        // Robust filtering for all types of junk
         val num = id.toLongOrNull() ?: return false
+        // Excludes 0, -1, Max Int (2147483647), and Max Long
         return num > 0 && num != 2147483647L && num != 9223372036854775807L
     }
 
     private fun getDbm(cell: CellInfo): String {
-        val dbm = when (val s = cell.cellSignalStrength) {
+        val s = cell.cellSignalStrength
+        val dbm = when (s) {
             is CellSignalStrengthLte -> s.dbm
             is CellSignalStrengthGsm -> s.dbm
             is CellSignalStrengthWcdma -> s.dbm
