@@ -1,270 +1,206 @@
 package com.omama.celltowerlogger
 
-import android.Manifest
 import android.annotation.SuppressLint
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.Service
+import android.app.*
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.location.Location
-import android.os.Build
-import android.os.IBinder
-import android.os.Looper
+import android.os.*
 import android.telephony.*
 import androidx.core.app.NotificationCompat
-import androidx.core.content.ContextCompat
 import com.google.android.gms.location.*
-import java.io.BufferedWriter
-import java.io.File
-import java.io.FileWriter
+import java.io.*
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.Executors
-import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 class CellLoggerService : Service() {
-
     private lateinit var telephonyManager: TelephonyManager
     private lateinit var fusedLocationClient: FusedLocationProviderClient
-    private lateinit var notificationManager: NotificationManager
+    private val scheduler = Executors.newSingleThreadScheduledExecutor()
+    private val fileLock = Any()
+    private val isAuditRunning = AtomicBoolean(false)
+    private var lastCid = ""
 
-    private val cellExecutor = Executors.newSingleThreadExecutor()
-    private val locationScheduler: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
-
-    private var telephonyCallback: Any? = null
-    private var locationCallback: LocationCallback? = null
-
-    // State variables for notification and cross-event logging
-    private var lastServingCellInfo: CellInfo? = null
-    private var lastGpsStatus: String = "Starting..."
-
-    companion object {
-        private const val NOTIFICATION_CHANNEL_ID = "CellLoggerChannel"
-        private const val NOTIFICATION_ID = 1
-        private const val AUDIT_INTERVAL_MINUTES = 5L
-    }
-
-    @SuppressLint("MissingPermission")
     override fun onCreate() {
         super.onCreate()
-        notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         telephonyManager = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
-        createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification())
 
-        startCellInfoListener()
-        startLocationAudit()
+        createNotificationChannel()
+        startForeground(101, buildNotification("Initializing Logger..."))
+
+        // 1. Passive Handover (Captured when OS is awake)
+        setupPassiveListener()
+
+        // 2. High Priority Heartbeat (Every 5 minutes)
+        scheduler.scheduleAtFixedRate({
+            if (!isAuditRunning.get()) runHighPriorityAudit()
+        }, 0, 5, TimeUnit.MINUTES)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return START_STICKY
     }
 
-    private fun startLocationAudit() {
-        val auditTask = Runnable { requestLocationFix() }
-        locationScheduler.scheduleAtFixedRate(auditTask, 0, AUDIT_INTERVAL_MINUTES, TimeUnit.MINUTES)
-    }
-
     @SuppressLint("MissingPermission")
-    private fun requestLocationFix() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) return
+    private fun runHighPriorityAudit() {
+        isAuditRunning.set(true)
+        val startTime = System.currentTimeMillis()
 
-        val requestStartTime = System.currentTimeMillis()
-        lastGpsStatus = "Searching..."
-        updateNotification()
-
-        val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000)
+        val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000)
             .setMaxUpdates(1)
+            .setDurationMillis(30000)
             .build()
 
-        val timeoutHandler = locationScheduler.schedule({
-            if (locationCallback != null) {
-                logLocationFailure()
-                removeLocationUpdates()
-            }
-        }, 1, TimeUnit.MINUTES) // 1-minute timeout for a fix
+        fusedLocationClient.requestLocationUpdates(request, object : LocationCallback() {
+            override fun onLocationResult(result: LocationResult) {
+                val loc = result.lastLocation
+                val latency = System.currentTimeMillis() - startTime
 
-        locationCallback = object : LocationCallback() {
-            override fun onLocationResult(locationResult: LocationResult) {
-                timeoutHandler.cancel(false) // Fix received, cancel timeout
-                val location = locationResult.lastLocation ?: return
-                logLocationSuccess(location, requestStartTime)
-                removeLocationUpdates()
+                if (loc != null) {
+                    // FORCE MODEM REFRESH: Instead of waiting 2s, we demand a fresh scan.
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        telephonyManager.requestCellInfoUpdate(mainExecutor, object : TelephonyManager.CellInfoCallback() {
+                            override fun onCellInfo(cells: List<CellInfo>) {
+                                processAndLogCells(cells, loc, latency)
+                            }
+                        })
+                    } else {
+                        // Fallback for older Android versions
+                        Handler(Looper.getMainLooper()).postDelayed({
+                            processAndLogCells(telephonyManager.allCellInfo ?: emptyList(), loc, latency)
+                        }, 2000)
+                    }
+                } else {
+                    isAuditRunning.set(false)
+                }
+                fusedLocationClient.removeLocationUpdates(this)
             }
-        }
-
-        fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback!!, Looper.getMainLooper())
+        }, Looper.getMainLooper())
     }
 
-    private fun removeLocationUpdates() {
-        locationCallback?.let {
-            fusedLocationClient.removeLocationUpdates(it)
-            locationCallback = null
+    private fun processAndLogCells(cells: List<CellInfo>, loc: Location, latency: Long) {
+        if (cells.isEmpty()) {
+            logRow("AUDIT_EMPTY", "N/A", "N/A", "N/A", loc.latitude.toString(), loc.longitude.toString(), loc.accuracy.toString(), latency.toString())
         }
+
+        cells.forEach { cell ->
+            val (cid, lac) = getCellIds(cell)
+            if (isValidId(cid)) {
+                val label = if (cell.isRegistered) "AUDIT_SERVING" else "AUDIT_NEIGHBOR"
+                logRow(label, cid, lac, getDbm(cell), loc.latitude.toString(), loc.longitude.toString(), loc.accuracy.toString(), latency.toString())
+            }
+        }
+        isAuditRunning.set(false)
+        updateNotification("Last Audit: ${getTimestamp()}")
     }
 
     @SuppressLint("MissingPermission")
-    private fun startCellInfoListener() {
+    private fun setupPassiveListener() {val callback = object : TelephonyCallback(), TelephonyCallback.CellInfoListener {
+        override fun onCellInfoChanged(info: MutableList<CellInfo>) {
+            // --- Handover and Notification Logic (no change here) ---
+            // Find the serving cell just to update the notification if a handover occurred.
+            val serving = info.firstOrNull { it.isRegistered }
+            if (serving != null) {
+                val (servingCid, _) = getCellIds(serving)
+                if (isValidId(servingCid) && servingCid != lastCid) {
+                    lastCid = servingCid
+                    updateNotification("Handover to: $servingCid")
+                }
+            }
+
+            // --- New Logging Logic ---
+            // Now, iterate through ALL cells (serving and neighbors) and log them.
+            info.forEach { cell ->
+                val (cid, lac) = getCellIds(cell)
+                val dbm = getDbm(cell)
+
+                // Your existing validation correctly filters out cells with bad IDs or signal readings.
+                if (isValidId(cid) && dbm != "N/A") {
+                    // Use a clear label to distinguish between passive serving and neighbor logs.
+                    val label = if (cell.isRegistered) "PASSIVE_SERVING" else "PASSIVE_NEIGHBOR"
+
+                    // Log without location, since this is a passive, non-location-based event.
+                    logRow(label, cid, lac, dbm, "N/A", "N/A", "N/A", "N/A")
+                }
+            }
+        }
+    }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            telephonyCallback = object : TelephonyCallback(), TelephonyCallback.CellInfoListener {
-                override fun onCellInfoChanged(cellInfo: MutableList<CellInfo>) { handleCellInfoChange(cellInfo) }
-            }
-            telephonyManager.registerTelephonyCallback(cellExecutor, telephonyCallback as TelephonyCallback)
-        } else {
-            telephonyCallback = object : PhoneStateListener(cellExecutor) {
-                @Deprecated("Deprecated in Java")
-                override fun onCellInfoChanged(cellInfo: MutableList<CellInfo>?) { cellInfo?.let { handleCellInfoChange(it) } }
-            }
-            @Suppress("DEPRECATION")
-            telephonyManager.listen(telephonyCallback as PhoneStateListener, PhoneStateListener.LISTEN_CELL_INFO)
+            telephonyManager.registerTelephonyCallback(Executors.newSingleThreadExecutor(), callback)
         }
     }
 
-    private fun handleCellInfoChange(cellInfoList: List<CellInfo>) {
-        val newServingCell = cellInfoList.firstOrNull { it.isRegistered }
-        if (newServingCell == null || getCellId(newServingCell) == getCellId(lastServingCellInfo)) {
-            return // No change or no serving cell
+
+    private fun getCellIds(cell: CellInfo): Pair<String, String> {
+        val id = cell.cellIdentity
+        return when (id) {
+            is CellIdentityLte -> id.ci.toString() to id.tac.toString()
+            is CellIdentityGsm -> id.cid.toString() to id.lac.toString()
+            is CellIdentityWcdma -> id.cid.toString() to id.lac.toString()
+            is CellIdentityNr -> id.nci.toString() to id.tac.toString()
+            else -> "N/A" to "N/A"
         }
-        lastServingCellInfo = newServingCell
-        logCellChange(cellInfoList)
     }
 
-    // --- Logging & Formatting --- //
+    private fun isValidId(id: String): Boolean {
+        val num = id.toLongOrNull() ?: return false
+        // Excludes 0, -1, Max Int (2147483647), and Max Long
+        return num > 0 && num != 2147483647L && num != 9223372036854775807L
+    }
 
-    private fun logCellChange(cellInfoList: List<CellInfo>) {
-        val timestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
-        cellInfoList.forEach { cellInfo ->
-            val (cid, lacTac) = getCellIdentifiers(cellInfo)
-            val signal = getSignalStrength(cellInfo)
-            // For cell changes, location data is N/A
-            val logString = "$timestamp,CELL_CHANGE,$cid,$lacTac,$signal,N/A,N/A,N/A,N/A"
-            writeToCsv(logString)
+    private fun getDbm(cell: CellInfo): String {
+        val s = cell.cellSignalStrength
+        val dbm = when (s) {
+            is CellSignalStrengthLte -> s.dbm
+            is CellSignalStrengthGsm -> s.dbm
+            is CellSignalStrengthWcdma -> s.dbm
+            is CellSignalStrengthNr -> s.dbm
+            else -> -999
         }
-        updateNotification()
+        return if (dbm == -999 || dbm == 0 || dbm == 2147483647) "N/A" else dbm.toString()
     }
 
-    private fun logLocationSuccess(location: Location, requestStartTime: Long) {
-        val responseTime = System.currentTimeMillis()
-        val latency = responseTime - requestStartTime
-        val timestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date(responseTime))
-
-        // For location events, use the last known serving cell data
-        val (cid, lacTac) = getCellIdentifiers(lastServingCellInfo)
-        val signal = getSignalStrength(lastServingCellInfo)
-
-        lastGpsStatus = "$latency ms"
-        val logString = "$timestamp,LOCATION_SUCCESS,$cid,$lacTac,$signal,${location.latitude},${location.longitude},${location.accuracy},$latency"
-        writeToCsv(logString)
-        updateNotification()
-    }
-
-    private fun logLocationFailure() {
-        val timestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
-        lastGpsStatus = "Timeout"
-        // For failed location, cell and location data is N/A, only latency is relevant
-        val logString = "$timestamp,LOCATION_FAILURE,N/A,N/A,N/A,N/A,N/A,N/A,TIMEOUT"
-        writeToCsv(logString)
-        updateNotification()
-    }
-
-    private fun writeToCsv(data: String) {
-        val logFile = File(filesDir, "tower_logs.csv")
-        val isNewFile = !logFile.exists()
-        try {
-            BufferedWriter(FileWriter(logFile, true)).use { writer ->
-                if (isNewFile) {
-                    writer.write("Timestamp,Event_Type,CID,LAC_TAC,Signal_dBm,Lat,Lon,Accuracy,Latency_ms")
-                    writer.newLine()
+    private fun logRow(event: String, cid: String, lac: String, dbm: String, lat: String, lon: String, acc: String, latency: String) {
+        synchronized(fileLock) {
+            try {
+                val file = File(filesDir, "tower_logs.csv")
+                val isNew = !file.exists()
+                BufferedWriter(FileWriter(file, true)).use { out ->
+                    if (isNew) out.write("Timestamp,Event_Type,CID,LAC_TAC,Signal_dBm,Lat,Lon,Accuracy,Latency_ms\n")
+                    out.write("${getTimestamp()},$event,$cid,$lac,$dbm,$lat,$lon,$acc,$latency\n")
                 }
-                writer.write(data)
-                writer.newLine()
-                writer.flush() // Force write to disk
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
+            } catch (e: Exception) {}
         }
     }
 
-    // --- Notification --- //
-
-    private fun buildNotification(): Notification {
-        val (cid, _) = getCellIdentifiers(lastServingCellInfo)
-        val contentText = "Tower: $cid | GPS: $lastGpsStatus"
-
-        return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-            .setContentTitle("Cell & Location Audit Active")
-            .setContentText(contentText)
-            .setSmallIcon(R.mipmap.ic_launcher)
-            .setOnlyAlertOnce(true) // Don't make sound on update
-            .build()
-    }
-
-    private fun updateNotification() {
-        notificationManager.notify(NOTIFICATION_ID, buildNotification())
-    }
-
-    // --- Helper Functions --- //
-
-    private fun getCellId(cellInfo: CellInfo?): String {
-        val (cid, _) = getCellIdentifiers(cellInfo)
-        return cid
-    }
-
-    private fun getCellIdentifiers(cellInfo: CellInfo?): Pair<String, String> {
-        if (cellInfo == null) return Pair("N/A", "N/A")
-        return when (cellInfo) {
-            is CellInfoLte -> Pair(cellInfo.cellIdentity.ci.toString(), cellInfo.cellIdentity.tac.toString())
-            is CellInfoGsm -> Pair(cellInfo.cellIdentity.cid.toString(), cellInfo.cellIdentity.lac.toString())
-            is CellInfoWcdma -> Pair(cellInfo.cellIdentity.cid.toString(), cellInfo.cellIdentity.lac.toString())
-            is CellInfoNr -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) Pair((cellInfo.cellIdentity as CellIdentityNr).nci.toString(), (cellInfo.cellIdentity as CellIdentityNr).tac.toString()) else Pair("N/A", "N/A")
-            else -> Pair("N/A", "N/A")
-        }
-    }
-
-    private fun getSignalStrength(cellInfo: CellInfo?): String {
-        if (cellInfo == null) return "N/A"
-        return when (cellInfo) {
-            is CellInfoLte -> cellInfo.cellSignalStrength.dbm.toString()
-            is CellInfoGsm -> cellInfo.cellSignalStrength.dbm.toString()
-            is CellInfoWcdma -> cellInfo.cellSignalStrength.dbm.toString()
-            is CellInfoNr -> {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    (cellInfo.cellSignalStrength as CellSignalStrengthNr).dbm.toString()
-                } else {
-                    "N/A"
-                }
-            }
-            else -> "N/A"
-        }
+    private fun getTimestamp(): String {
+        return SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
     }
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(NOTIFICATION_CHANNEL_ID, "Cell Logger", NotificationManager.IMPORTANCE_LOW)
-            notificationManager.createNotificationChannel(channel)
+            val channel = NotificationChannel("CellLog", "Logger Service", NotificationManager.IMPORTANCE_LOW)
+            val manager = getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(channel)
         }
     }
 
-    override fun onBind(intent: Intent?): IBinder? = null
+    private fun buildNotification(txt: String) = NotificationCompat.Builder(this, "CellLog")
+        .setContentTitle("Cell Logger Running")
+        .setContentText(txt)
+        .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+        .setOngoing(true)
+        .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+        .build()
 
-    override fun onDestroy() {
-        super.onDestroy()
-        if (telephonyCallback != null) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                telephonyManager.unregisterTelephonyCallback(telephonyCallback as TelephonyCallback)
-            } else {
-                @Suppress("DEPRECATION")
-                telephonyManager.listen(telephonyCallback as PhoneStateListener, PhoneStateListener.LISTEN_NONE)
-            }
-        }
-        locationScheduler.shutdownNow()
-        cellExecutor.shutdown()
-        removeLocationUpdates()
-        writeToCsv("${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())},SERVICE_STOPPED,N/A,N/A,N/A,N/A,N/A,N/A,N/A")
+    private fun updateNotification(txt: String) {
+        val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+        nm.notify(101, buildNotification(txt))
     }
+
+    override fun onBind(p0: Intent?) = null
 }

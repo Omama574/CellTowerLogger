@@ -1,11 +1,12 @@
 package com.omama.celltowerlogger
 
 import android.Manifest
-import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
@@ -17,120 +18,98 @@ import java.io.File
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var btnStart: Button
-    private lateinit var btnStop: Button
-    private lateinit var btnDownload: Button
-    private lateinit var statusText: TextView
-    private lateinit var lastFixInfo: TextView
+    private lateinit var txtStatus: TextView
 
-    private val requestMultiplePermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
-        val fineLocationGranted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] ?: false
-        val phoneStateGranted = permissions[Manifest.permission.READ_PHONE_STATE] ?: false
+    // Base permissions (Foreground)
+    private val basePermissions = mutableListOf(
+        Manifest.permission.ACCESS_FINE_LOCATION,
+        Manifest.permission.ACCESS_COARSE_LOCATION,
+        Manifest.permission.READ_PHONE_STATE
+    ).apply {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }.toTypedArray()
 
-        if (fineLocationGranted && phoneStateGranted) {
-            // Permissions are granted, now check for background location permission
-            checkBackgroundLocationPermission()
+    private val permissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        if (results.all { it.value }) {
+            checkBackgroundLocation()
         } else {
-            Toast.makeText(this, "High Accuracy Location and Phone State permissions are required.", Toast.LENGTH_LONG).show()
-            btnStart.isEnabled = false
+            Toast.makeText(this, "Permissions Denied", Toast.LENGTH_SHORT).show()
         }
     }
 
-    private val requestBackgroundLocationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
-        if (isGranted) {
-            Toast.makeText(this, "Background location permission granted.", Toast.LENGTH_SHORT).show()
-            btnStart.isEnabled = true
-        } else {
-            Toast.makeText(this, "Background Location is essential for logging while the app is not visible.", Toast.LENGTH_LONG).show()
-            btnStart.isEnabled = false
-        }
-    }
-
-    @SuppressLint("SetTextI18n")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        btnStart = findViewById(R.id.btnStart)
-        btnStop = findViewById(R.id.btnStop)
-        btnDownload = findViewById(R.id.btnDownload)
-        statusText = findViewById(R.id.statusText)
-        lastFixInfo = findViewById(R.id.lastFixInfo)
-
-        btnStart.isEnabled = false // Disable button by default
+        txtStatus = findViewById(R.id.txtStatus)
+        val btnStart = findViewById<Button>(R.id.btnStart)
+        val btnStop = findViewById<Button>(R.id.btnStop)
+        val btnShare = findViewById<Button>(R.id.btnShare)
 
         btnStart.setOnClickListener {
-            val serviceIntent = Intent(this, CellLoggerService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(serviceIntent)
-            } else {
-                startService(serviceIntent)
-            }
-            statusText.text = "Status: Recording..."
+            permissionLauncher.launch(basePermissions)
         }
 
         btnStop.setOnClickListener {
             stopService(Intent(this, CellLoggerService::class.java))
-            statusText.text = "Status: Idle"
+            txtStatus.text = "Status: Stopped"
+            Toast.makeText(this, "Logger Stopped", Toast.LENGTH_SHORT).show()
         }
 
-        btnDownload.setOnClickListener {
-            shareLogFile()
-        }
-
-        checkAndRequestPermissions()
-    }
-
-    private fun checkAndRequestPermissions() {
-        val permissionsToRequest = mutableListOf<String>()
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            permissionsToRequest.add(Manifest.permission.ACCESS_FINE_LOCATION)
-        }
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
-            permissionsToRequest.add(Manifest.permission.READ_PHONE_STATE)
-        }
-
-        if (permissionsToRequest.isNotEmpty()) {
-            requestMultiplePermissions.launch(permissionsToRequest.toTypedArray())
-        } else {
-            // Permissions are already granted, check for background location
-            checkBackgroundLocationPermission()
+        btnShare.setOnClickListener {
+            shareCsvFile()
         }
     }
 
-    private fun checkBackgroundLocationPermission() {
+    private fun checkBackgroundLocation() {
+        // Android 10+ requires separate background permission check
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_BACKGROUND_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-                Toast.makeText(this, "Background Location is needed to log towers while the screen is off", Toast.LENGTH_LONG).show()
-                requestBackgroundLocationPermission.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+            val hasBackground = ContextCompat.checkSelfPermission(
+                this, Manifest.permission.ACCESS_BACKGROUND_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+
+            if (!hasBackground) {
+                Toast.makeText(this, "IMPORTANT: Select 'Allow all the time'", Toast.LENGTH_LONG).show()
+                val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.fromParts("package", packageName, null)
+                }
+                startActivity(intent)
             } else {
-                btnStart.isEnabled = true
+                startLoggerService()
             }
         } else {
-            btnStart.isEnabled = true // No background permission needed for older versions
+            startLoggerService()
         }
     }
 
-    private fun shareLogFile() {
-        val logFile = File(filesDir, "tower_logs.csv")
-        if (!logFile.exists()) {
-            Toast.makeText(this, "Log file not found.", Toast.LENGTH_SHORT).show()
+    private fun startLoggerService() {
+        val intent = Intent(this, CellLoggerService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
+        }
+        txtStatus.text = "Status: Running (High Priority)"
+    }
+
+    private fun shareCsvFile() {
+        val file = File(filesDir, "tower_logs.csv")
+        if (!file.exists()) {
+            Toast.makeText(this, "No logs found yet.", Toast.LENGTH_SHORT).show()
             return
         }
 
-        val fileUri = FileProvider.getUriForFile(
-            this,
-            "${applicationContext.packageName}.fileprovider",
-            logFile
-        )
+        val uri = FileProvider.getUriForFile(this, "${packageName}.fileprovider", file)
 
-        val shareIntent = Intent().apply {
-            action = Intent.ACTION_SEND
-            putExtra(Intent.EXTRA_STREAM, fileUri)
+        val intent = Intent(Intent.ACTION_SEND).apply {
             type = "text/csv"
+            putExtra(Intent.EXTRA_STREAM, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-
-        startActivity(Intent.createChooser(shareIntent, "Share Log File"))
+        startActivity(Intent.createChooser(intent, "Share Logs"))
     }
 }
