@@ -99,23 +99,41 @@ class CellLoggerService : Service() {
     }
 
     @SuppressLint("MissingPermission")
-    private fun setupPassiveListener() {
-        val callback = object : TelephonyCallback(), TelephonyCallback.CellInfoListener {
-            override fun onCellInfoChanged(info: MutableList<CellInfo>) {
-                val serving = info.firstOrNull { it.isRegistered } ?: return
-                val (cid, lac) = getCellIds(serving)
+    private fun setupPassiveListener() {val callback = object : TelephonyCallback(), TelephonyCallback.CellInfoListener {
+        override fun onCellInfoChanged(info: MutableList<CellInfo>) {
+            // --- Handover and Notification Logic (no change here) ---
+            // Find the serving cell just to update the notification if a handover occurred.
+            val serving = info.firstOrNull { it.isRegistered }
+            if (serving != null) {
+                val (servingCid, _) = getCellIds(serving)
+                if (isValidId(servingCid) && servingCid != lastCid) {
+                    lastCid = servingCid
+                    updateNotification("Handover to: $servingCid")
+                }
+            }
 
-                if (isValidId(cid) && cid != lastCid) {
-                    lastCid = cid
-                    logRow("SERVING_HANDOVER", cid, lac, getDbm(serving), "N/A", "N/A", "N/A", "N/A")
-                    updateNotification("Tower: $cid")
+            // --- New Logging Logic ---
+            // Now, iterate through ALL cells (serving and neighbors) and log them.
+            info.forEach { cell ->
+                val (cid, lac) = getCellIds(cell)
+                val dbm = getDbm(cell)
+
+                // Your existing validation correctly filters out cells with bad IDs or signal readings.
+                if (isValidId(cid) && dbm != "N/A") {
+                    // Use a clear label to distinguish between passive serving and neighbor logs.
+                    val label = if (cell.isRegistered) "PASSIVE_SERVING" else "PASSIVE_NEIGHBOR"
+
+                    // Log without location, since this is a passive, non-location-based event.
+                    logRow(label, cid, lac, dbm, "N/A", "N/A", "N/A", "N/A")
                 }
             }
         }
+    }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             telephonyManager.registerTelephonyCallback(Executors.newSingleThreadExecutor(), callback)
         }
     }
+
 
     private fun getCellIds(cell: CellInfo): Pair<String, String> {
         val id = cell.cellIdentity
