@@ -1,26 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+    package="com.omama.celltowerlogger">
 
-    <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <!-- Permissions -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- Required for location-typed foreground services on newer Android -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
         android:allowBackup="true"
-        android:dataExtractionRules="@xml/data_extraction_rules"
-        android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.CellTowerLogger">
 
+        <!-- Main Activity -->
         <activity
             android:name=".MainActivity"
             android:exported="true">
@@ -30,11 +29,27 @@
             </intent-filter>
         </activity>
 
+        <!-- Foreground Survival Service -->
         <service
             android:name=".CellLoggerService"
             android:foregroundServiceType="location"
             android:exported="false" />
 
+        <!-- Boot Receiver (tests autostart behavior) -->
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Watchdog alarm receiver (resurrects the FGS) -->
+        <receiver
+            android:name=".WatchdogReceiver"
+            android:exported="true" />
+
+        <!-- FileProvider for CSV sharing -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -44,6 +59,7 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+
     </application>
 
 </manifest>
