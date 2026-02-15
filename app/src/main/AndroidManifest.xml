@@ -7,6 +7,7 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- Required for location-typed foreground services on newer Android -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
@@ -37,11 +38,16 @@
         <!-- Boot Receiver (tests autostart behavior) -->
         <receiver
             android:name=".BootReceiver"
-            android:exported="false">
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
+
+        <!-- Watchdog alarm receiver (resurrects the FGS) -->
+        <receiver
+            android:name=".WatchdogReceiver"
+            android:exported="true" />
 
         <!-- FileProvider for CSV sharing -->
         <provider

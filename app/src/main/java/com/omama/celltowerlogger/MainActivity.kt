@@ -2,15 +2,19 @@ package com.omama.celltowerlogger
 
 import android.Manifest
 import android.content.Intent
+import android.content.IntentSender
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
+import com.google.android.gms.common.api.ResolvableApiException
+import com.google.android.gms.location.*
 import java.io.File
 
 class MainActivity : AppCompatActivity() {
@@ -26,15 +30,26 @@ class MainActivity : AppCompatActivity() {
         }
     }.toTypedArray()
 
+    // Handles permission result
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { results ->
         if (results.all { it.value }) {
-            startLoggerService()
+            checkLocationSettingsAndStart()
         } else {
             Toast.makeText(this, "Permissions denied", Toast.LENGTH_SHORT).show()
         }
     }
+
+    // Handles GPS enable dialog result
+    private val locationResolutionLauncher =
+        registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+            if (result.resultCode == RESULT_OK) {
+                startLoggerService()
+            } else {
+                Toast.makeText(this, "Location is required", Toast.LENGTH_SHORT).show()
+            }
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -59,6 +74,42 @@ class MainActivity : AppCompatActivity() {
 
         btnShare.setOnClickListener {
             shareCsv()
+        }
+    }
+
+    // 🔥 Proper Google Play Services location settings check
+    private fun checkLocationSettingsAndStart() {
+
+        val locationRequest = LocationRequest.Builder(
+            Priority.PRIORITY_HIGH_ACCURACY,
+            10_000L
+        ).build()
+
+        val builder = LocationSettingsRequest.Builder()
+            .addLocationRequest(locationRequest)
+            .setAlwaysShow(true)
+
+        val client = LocationServices.getSettingsClient(this)
+        val task = client.checkLocationSettings(builder.build())
+
+        task.addOnSuccessListener {
+            startLoggerService()
+        }
+
+        task.addOnFailureListener { exception ->
+            if (exception is ResolvableApiException) {
+                try {
+                    val intentSenderRequest =
+                        IntentSenderRequest.Builder(exception.resolution).build()
+
+                    locationResolutionLauncher.launch(intentSenderRequest)
+
+                } catch (sendEx: IntentSender.SendIntentException) {
+                    sendEx.printStackTrace()
+                }
+            } else {
+                Toast.makeText(this, "Location settings unavailable", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
