@@ -179,10 +179,10 @@ class CellLoggerService : Service() {
         try {
             val request = LocationRequest.Builder(
                 Priority.PRIORITY_HIGH_ACCURACY,
-                10 * 60 * 1000L
+                3 * 60 * 1000L  // Changed from 10 minutes to 3 minutes (180,000 ms)
             )
-                .setMinUpdateIntervalMillis(5 * 60 * 1000L)
-                .setMaxUpdateDelayMillis(10 * 60 * 1000L)
+                .setMinUpdateIntervalMillis(2 * 60 * 1000L)  // Changed from 5 min to 2 min (120,000 ms)
+                .setMaxUpdateDelayMillis(3 * 60 * 1000L)    // Changed from 10 min to 3 min (180,000 ms)
                 .setGranularity(Granularity.GRANULARITY_PERMISSION_LEVEL)
                 .build()
 
@@ -191,7 +191,7 @@ class CellLoggerService : Service() {
             CsvLogger.logEvent(this, "FLP_REQUEST_REG_SUCCESS", null)
 
             // immediate availability check
-            fusedLocationClient.getLocationAvailability()
+            fusedLocationClient.locationAvailability
                 .addOnSuccessListener { avail ->
                     CsvLogger.logEvent(this, "GET_LOCATION_AVAIL_SUCCESS:available=${avail.isLocationAvailable}", null)
                 }
@@ -314,7 +314,7 @@ class CellLoggerService : Service() {
         // prepare cancellation + timeout for one-shot
         val cts = CancellationTokenSource()
         oneShotHandler = Handler(Looper.getMainLooper())
-        val timeoutRunnable = Runnable {
+        val timeoutRunnable = Runnable { 
             try {
                 cts.cancel()
             } catch (_: Throwable) {}
@@ -369,54 +369,48 @@ class CellLoggerService : Service() {
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
         val currentBackoff = prefs.getInt(KEY_BACKOFF_COUNT, 0)
         val next = currentBackoff + 1
+        val backoffMs = min(BACKOFF_MAX_MS, (BACKOFF_MIN_MS * BACKOFF_BASE_MULTIPLIER.pow(next - 1)).toLong())
+
+        CsvLogger.logEvent(this, "WATCHDOG_BACKOFF_SCHEDULE_count=$next,interval_ms=$backoffMs", null)
+        scheduleWatchdogIfNeeded(backoffMs)
         prefs.edit().putInt(KEY_BACKOFF_COUNT, next).apply()
+    }
 
-        val exponential = (WATCHDOG_MS_DEFAULT * BACKOFF_BASE_MULTIPLIER.pow(next.toDouble())).toLong()
-        val computed = maxOf(BACKOFF_MIN_MS, exponential)
-        val backoff = min(computed, BACKOFF_MAX_MS)
+    private fun buildNotification(text: String): Notification {
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("Survival Logger")
+            .setContentText(text)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .build()
+    }
 
-        CsvLogger.logEvent(this, "ONE_SHOT_FAILED_SCHED_BACKOFF_ms=$backoff", null)
-        scheduleWatchdogIfNeeded(backoff)
+    private fun updateNotification(text: String) {
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.notify(NOTIF_ID, buildNotification(text))
     }
 
     private fun releaseWakeLock() {
         try {
-            oneShotHandler?.removeCallbacksAndMessages(null)
-            oneShotHandler = null
-            wakeLock?.let {
-                if (it.isHeld) it.release()
+            wakeLock?.let { 
+                if(it.isHeld) {
+                    it.release()
+                }
             }
         } catch (t: Throwable) {
             t.printStackTrace()
-        } finally {
-            wakeLock = null
         }
-    }
-
-    // -------------------------
-    // Notification helpers
-    // -------------------------
-    private fun updateNotification(text: String) {
-        val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-        nm.notify(NOTIF_ID, buildNotification(text))
     }
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(CHANNEL_ID, "Survival Logger", NotificationManager.IMPORTANCE_LOW)
-            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+            val name = "Survival Channel"
+            val descriptionText = "Channel for the survival logger service"
+            val importance = NotificationManager.IMPORTANCE_LOW
+            val channel = NotificationChannel(CHANNEL_ID, name, importance).apply {
+                description = descriptionText
+            }
+            val notificationManager: NotificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.createNotificationChannel(channel)
         }
-    }
-
-    private fun buildNotification(text: String): Notification {
-        val stopIntent = Intent(this, CellLoggerService::class.java).apply { action = "ACTION_STOP" }
-        val stopPending = PendingIntent.getService(this, 0, stopIntent, PendingIntent.FLAG_IMMUTABLE)
-        return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Survival Logger Running")
-            .setContentText(text)
-            .setSmallIcon(android.R.drawable.ic_menu_mylocation)
-            .setOngoing(true)
-            .addAction(android.R.drawable.ic_delete, "Stop", stopPending)
-            .build()
     }
 }

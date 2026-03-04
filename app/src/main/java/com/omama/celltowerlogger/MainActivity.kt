@@ -10,6 +10,9 @@ import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.IntentSenderRequest
+import android.content.Context
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
@@ -74,6 +77,19 @@ class MainActivity : AppCompatActivity() {
 
         btnShare.setOnClickListener {
             shareCsv()
+        }
+
+        checkBatteryOptimization()
+    }
+
+    private fun checkBatteryOptimization() {
+        val intent = Intent()
+        val packageName = packageName
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+            intent.action = Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
+            intent.data = Uri.parse("package:$packageName")
+            startActivity(intent)
         }
     }
 

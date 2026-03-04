@@ -10,6 +10,8 @@
     <!-- Required for location-typed foreground services on newer Android -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
         android:allowBackup="true"
@@ -47,7 +49,7 @@
         <!-- Watchdog alarm receiver (resurrects the FGS) -->
         <receiver
             android:name=".WatchdogReceiver"
-            android:exported="true" />
+            android:exported="false" />
 
         <!-- FileProvider for CSV sharing -->
         <provider
